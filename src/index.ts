@@ -30,6 +30,7 @@ import * as docsTools from './tools/docs.js';
 import * as sheetsTools from './tools/sheets.js';
 import * as slidesTools from './tools/slides.js';
 import * as calendarTools from './tools/calendar.js';
+import { fileLog, fileLogError, fileLogSessionStart, getLogPath } from './utils/fileLogger.js';
 
 // Cached service instances — only recreated when authClient changes
 let _drive: drive_v3.Drive | null = null;
@@ -74,6 +75,8 @@ function log(message: string, data?: any) {
     ? `[${timestamp}] ${message}: ${JSON.stringify(data)}`
     : `[${timestamp}] ${message}`;
   console.error(logMessage);
+  // Mirror every log entry to the file so it survives HTTP transport buffering
+  fileLog(message, data);
 }
 
 // -----------------------------------------------------------------------------
@@ -358,6 +361,8 @@ function createMcpServer(): Server {
       });
       // Also write the full stack to stderr so it appears in Railway logs
       console.error(`[Tool Error] ${request.params.name}:`, error);
+      // Write to file as a guaranteed-flush fallback (see /tmp/mcp-errors.log)
+      fileLogError(`Tool error [${request.params.name}]`, error);
       return errorResponse(err.message ?? String(error));
     }
   });
@@ -556,6 +561,7 @@ async function main() {
 
 async function startStdioTransport(): Promise<void> {
   try {
+    fileLogSessionStart();
     console.error("Starting Google Drive MCP server (stdio)...");
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -738,6 +744,7 @@ function createHttpApp(host: string, options?: CreateHttpAppOptions) {
 
 async function startHttpTransport(args: CliArgs): Promise<void> {
   try {
+    fileLogSessionStart();
     const { httpPort, httpHost } = args;
     console.error(`Starting Google Drive MCP server (HTTP on ${httpHost}:${httpPort})...`);
 

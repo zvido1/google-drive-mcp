@@ -12,6 +12,7 @@ import { downloadDriveFile, GOOGLE_WORKSPACE_EXPORT_FORMATS } from '../download-
 import { getSecureTokenPath } from '../auth/utils.js';
 import { SCOPE_ALIASES, SCOPE_PRESETS, resolveOAuthScopes } from '../auth/scopes.js';
 import { getAuthType, isServiceAccountMode } from '../auth/externalAuth.js';
+import { fileLogError, fileLog, getLogPath } from '../utils/fileLogger.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -850,6 +851,8 @@ export async function handleTool(
       // Log auth type for diagnostics
       const authType = getAuthType();
       ctx.log('listFolder called', { folderId: targetFolderId, authType });
+      // File-based diagnostic log — survives HTTP transport buffering
+      fileLog('listFolder called', { folderId: targetFolderId, authType, logPath: getLogPath() });
 
       try {
         const res = await ctx.getDrive().files.list({
@@ -880,6 +883,8 @@ export async function handleTool(
       } catch (e: unknown) {
         const err = e instanceof Error ? e : new Error(String(e));
         ctx.log('listFolder error', { folderId: targetFolderId, authType, error: err.message, stack: err.stack });
+        // Write to file synchronously — guaranteed flush regardless of transport buffering
+        fileLogError(`listFolder error [folderId=${targetFolderId}, authType=${authType}]`, err);
 
         // Provide a targeted message when service account auth can't reach a personal Drive folder
         if (isServiceAccountMode() && targetFolderId !== 'root') {
