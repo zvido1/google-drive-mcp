@@ -2,6 +2,9 @@
 // External authentication modes: Service Account & pre-obtained OAuth tokens
 // ---------------------------------------------------------------------------
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { OAuth2Client } from 'google-auth-library';
 import { GoogleAuth } from 'google-auth-library';
 import { DEFAULT_SCOPES } from './scopes.js';
@@ -9,6 +12,50 @@ import { DEFAULT_SCOPES } from './scopes.js';
 // ---------------------------------------------------------------------------
 // Service Account mode
 // ---------------------------------------------------------------------------
+
+/**
+ * If `GOOGLE_DRIVE_MCP_SERVICE_ACCOUNT_JSON` is set, parse its contents as a
+ * service-account JSON object, write it to a temporary file, and point
+ * `GOOGLE_APPLICATION_CREDENTIALS` at that file.
+ *
+ * This allows Railway (and similar platforms) to supply the full service-account
+ * JSON as a secret environment variable rather than mounting a file.
+ *
+ * Call this once, early in the auth flow, before `isServiceAccountMode()`.
+ */
+export function setupServiceAccountFromEnv(): void {
+  const jsonContent = process.env.GOOGLE_DRIVE_MCP_SERVICE_ACCOUNT_JSON?.trim();
+  if (!jsonContent) return;
+
+  // If GOOGLE_APPLICATION_CREDENTIALS is already set, respect it and skip.
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    console.error(
+      'GOOGLE_DRIVE_MCP_SERVICE_ACCOUNT_JSON is set but GOOGLE_APPLICATION_CREDENTIALS ' +
+        'already points to a file — skipping env-var service account setup.'
+    );
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonContent);
+  } catch {
+    throw new Error(
+      'GOOGLE_DRIVE_MCP_SERVICE_ACCOUNT_JSON is set but its value is not valid JSON. ' +
+        'Ensure the environment variable contains the raw JSON of your service account key file.'
+    );
+  }
+
+  // Write to a temp file that persists for the lifetime of the process.
+  const tmpFile = path.join(os.tmpdir(), `gcp-sa-${process.pid}.json`);
+  fs.writeFileSync(tmpFile, JSON.stringify(parsed), { encoding: 'utf8', mode: 0o600 });
+
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = tmpFile;
+  console.error(
+    `Service account JSON loaded from GOOGLE_DRIVE_MCP_SERVICE_ACCOUNT_JSON ` +
+      `and written to temporary file: ${tmpFile}`
+  );
+}
 
 /** True when `GOOGLE_APPLICATION_CREDENTIALS` is set (standard Google convention). */
 export function isServiceAccountMode(): boolean {
