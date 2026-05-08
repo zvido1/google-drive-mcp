@@ -3,6 +3,7 @@ import { initializeOAuth2Client } from './auth/client.js';
 import { AuthServer } from './auth/server.js';
 import { TokenManager } from './auth/tokenManager.js';
 import {
+  setupServiceAccountFromEnv,
   isServiceAccountMode, createServiceAccountAuth,
   isExternalTokenMode, validateExternalTokenConfig,
   createExternalOAuth2Client,
@@ -13,6 +14,7 @@ export { initializeOAuth2Client } from './auth/client.js';
 export { AuthServer } from './auth/server.js';
 export { SCOPE_ALIASES, SCOPE_PRESETS, DEFAULT_SCOPES, resolveOAuthScopes } from './auth/scopes.js';
 export {
+  setupServiceAccountFromEnv,
   isServiceAccountMode, createServiceAccountAuth,
   isExternalTokenMode, validateExternalTokenConfig,
   createExternalOAuth2Client,
@@ -25,6 +27,11 @@ export {
  */
 export async function authenticate(): Promise<any> {
   console.error('Initializing authentication...');
+
+  // Materialise GOOGLE_DRIVE_MCP_SERVICE_ACCOUNT_JSON into a temp file so that
+  // the standard GOOGLE_APPLICATION_CREDENTIALS / isServiceAccountMode() path
+  // picks it up transparently.
+  setupServiceAccountFromEnv();
 
   // Priority 1: Service account
   if (isServiceAccountMode()) {
