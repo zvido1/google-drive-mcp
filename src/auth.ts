@@ -16,6 +16,7 @@ export {
   isServiceAccountMode, createServiceAccountAuth,
   isExternalTokenMode, validateExternalTokenConfig,
   createExternalOAuth2Client,
+  getAuthType,
 } from './auth/externalAuth.js';
 
 /**

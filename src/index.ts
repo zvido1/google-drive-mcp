@@ -349,8 +349,16 @@ function createMcpServer(): Server {
       }
       return errorResponse("Tool not found");
     } catch (error) {
-      log('Error in tool request handler', { error: (error as Error).message });
-      return errorResponse((error as Error).message);
+      const err = error as Error;
+      log('Error in tool request handler', {
+        tool: request.params.name,
+        error: err.message,
+        stack: err.stack,
+        fullError: String(error),
+      });
+      // Also write the full stack to stderr so it appears in Railway logs
+      console.error(`[Tool Error] ${request.params.name}:`, error);
+      return errorResponse(err.message ?? String(error));
     }
   });
 
