@@ -16,7 +16,7 @@ import { google } from "googleapis";
 import type { drive_v3, calendar_v3 } from "googleapis";
 import { authenticate, AuthServer, initializeOAuth2Client } from './auth.js';
 import { fileURLToPath } from 'url';
-import { readFileSync } from 'fs';
+import { readFileSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import {
   getExtensionFromFilename,
@@ -74,6 +74,24 @@ function log(message: string, data?: any) {
     ? `[${timestamp}] ${message}: ${JSON.stringify(data)}`
     : `[${timestamp}] ${message}`;
   console.error(logMessage);
+}
+
+// File-based logger — writes to /tmp/mcp-http.log so logs survive HTTP
+// buffering and are visible even when stdout/stderr are swallowed.
+const HTTP_LOG_PATH = process.env.MCP_HTTP_LOG_PATH ?? '/tmp/mcp-http.log';
+
+function fileLog(message: string, data?: any) {
+  const timestamp = new Date().toISOString();
+  const logMessage = data
+    ? `[${timestamp}] ${message}: ${JSON.stringify(data)}\n`
+    : `[${timestamp}] ${message}\n`;
+  // Mirror to stderr as well so it shows up in Railway's log stream
+  process.stderr.write(logMessage);
+  try {
+    appendFileSync(HTTP_LOG_PATH, logMessage);
+  } catch {
+    // If we can't write to the log file, silently continue — don't crash the server
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -596,13 +614,60 @@ function createHttpApp(host: string, options?: CreateHttpAppOptions) {
   const sessions = new Map<string, HttpSession>();
   const sessionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // ---------------------------------------------------------------------------
+  // REQUEST / RESPONSE LOGGING MIDDLEWARE
+  // ---------------------------------------------------------------------------
+  fileLog('HTTP app created — request logging middleware active', { host });
+
+  app.use((req, res, next) => {
+    const start = Date.now();
+
+    if (req.method === 'POST' && req.path === '/mcp') {
+      const bodyPreview = req.body
+        ? JSON.stringify(req.body).slice(0, 500)
+        : '(empty)';
+      fileLog('HTTP POST /mcp', {
+        sessionId: req.headers['mcp-session-id'] ?? '(none)',
+        contentType: req.headers['content-type'],
+        accept: req.headers['accept'],
+        body: bodyPreview,
+      });
+    } else if (req.method === 'GET' && req.path === '/mcp') {
+      fileLog('HTTP GET /mcp', {
+        sessionId: req.headers['mcp-session-id'] ?? '(none)',
+        accept: req.headers['accept'],
+      });
+    } else if (req.method === 'DELETE' && req.path === '/mcp') {
+      fileLog('HTTP DELETE /mcp', {
+        sessionId: req.headers['mcp-session-id'] ?? '(none)',
+      });
+    } else {
+      fileLog(`HTTP ${req.method} ${req.path}`);
+    }
+
+    // Intercept res.end to capture the status code after the response is sent
+    const originalEnd = res.end.bind(res);
+    (res as any).end = (...args: Parameters<typeof res.end>) => {
+      const duration = Date.now() - start;
+      fileLog(`HTTP response`, {
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        durationMs: duration,
+      });
+      return originalEnd(...args);
+    };
+
+    next();
+  });
+
   function resetSessionTimer(sid: string) {
     const existing = sessionTimers.get(sid);
     if (existing) clearTimeout(existing);
     sessionTimers.set(sid, setTimeout(async () => {
       const session = sessions.get(sid);
       if (session) {
-        log(`Session idle timeout: ${sid}`);
+        fileLog(`Session idle timeout: ${sid}`);
         await session.transport.close();
         await session.server.close();
         sessions.delete(sid);
@@ -655,7 +720,7 @@ function createHttpApp(host: string, options?: CreateHttpAppOptions) {
         if (sid) {
           clearSessionTimer(sid);
           sessions.delete(sid);
-          log(`Session closed: ${sid}`);
+          fileLog(`Session closed: ${sid}`);
         }
       };
 
@@ -665,7 +730,7 @@ function createHttpApp(host: string, options?: CreateHttpAppOptions) {
       if (sid) {
         sessions.set(sid, { transport, server: sessionServer });
         resetSessionTimer(sid);
-        log(`New session created: ${sid}`);
+        fileLog(`New session created: ${sid}`);
       }
     } catch (error) {
       log('Error handling POST /mcp', { error: (error as Error).message });
