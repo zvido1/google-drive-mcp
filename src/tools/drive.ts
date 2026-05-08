@@ -227,6 +227,10 @@ const AuthTestFileAccessSchema = z.object({
   fileId: z.string().optional(),
 });
 
+const ReadTextFileSchema = z.object({
+  fileId: z.string().min(1, "File ID is required"),
+});
+
 function getGrantedScopesFromAuthClient(ctx: ToolContext): string[] {
   const scopeRaw = ctx.authClient?.credentials?.scope;
   if (!scopeRaw || typeof scopeRaw !== 'string') return [];
@@ -611,6 +615,20 @@ export const toolDefinitions: ToolDefinition[] = [
         fileId: {
           type: "string",
           description: "ID of the file to unlock"
+        }
+      },
+      required: ["fileId"]
+    }
+  },
+  {
+    name: "readTextFile",
+    description: "Read the text content of a file directly from Google Drive and return it as a string. Supports plain text, markdown, JSON, CSV, HTML, XML, and other text-based MIME types. Use this to read file contents without downloading to disk.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fileId: {
+          type: "string",
+          description: "Google Drive file ID of the text file to read"
         }
       },
       required: ["fileId"]
@@ -1825,6 +1843,63 @@ export async function handleTool(
           isError: true,
         };
       }
+    }
+
+    case "readTextFile": {
+      const validation = ReadTextFileSchema.safeParse(args);
+      if (!validation.success) {
+        return errorResponse(validation.error.errors[0].message);
+      }
+      const { fileId } = validation.data;
+
+      // Fetch file metadata to verify it is a readable text type
+      const metaRes = await ctx.getDrive().files.get({
+        fileId,
+        fields: 'id, name, mimeType',
+        supportsAllDrives: true,
+      });
+
+      const mimeType = metaRes.data.mimeType || '';
+      const fileName = metaRes.data.name || fileId;
+
+      // Reject Google Workspace files (Docs, Sheets, Slides, etc.) — use export instead
+      if (mimeType.startsWith('application/vnd.google-apps.')) {
+        return errorResponse(
+          `"${fileName}" is a Google Workspace file (${mimeType}). ` +
+          `Use the downloadFile tool with an exportMimeType (e.g. "text/plain" or "text/markdown") to export its content.`
+        );
+      }
+
+      // Only allow text-based MIME types
+      const isTextMime =
+        mimeType.startsWith('text/') ||
+        mimeType === 'application/json' ||
+        mimeType === 'application/xml' ||
+        mimeType === 'application/javascript' ||
+        mimeType === 'application/x-yaml' ||
+        mimeType === 'application/yaml';
+
+      if (!isTextMime) {
+        return errorResponse(
+          `"${fileName}" has MIME type "${mimeType}" which is not a supported text type. ` +
+          `readTextFile supports text/*, application/json, application/xml, and similar text-based formats.`
+        );
+      }
+
+      // Fetch the raw file content via alt=media
+      const contentRes = await ctx.getDrive().files.get(
+        { fileId, alt: 'media', supportsAllDrives: true } as any,
+        { responseType: 'arraybuffer' },
+      );
+
+      const text = Buffer.from(contentRes.data as ArrayBuffer).toString('utf-8');
+
+      ctx.log('readTextFile success', { fileId, fileName, mimeType, bytes: (contentRes.data as ArrayBuffer).byteLength });
+
+      return {
+        content: [{ type: 'text', text }],
+        isError: false,
+      };
     }
 
     default:
