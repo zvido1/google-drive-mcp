@@ -3,6 +3,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import {
   CallToolRequestSchema,
@@ -800,6 +801,67 @@ function createHttpApp(host: string, options?: CreateHttpAppOptions) {
           error: { code: -32603, message: 'Internal server error' },
           id: null,
         });
+      }
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // SSE TRANSPORT — for Claude's built-in custom connector UI
+  // ---------------------------------------------------------------------------
+  // Claude's connector UI only supports SSE (not Streamable HTTP), so we expose
+  // a /sse endpoint that upgrades the connection and a /messages endpoint that
+  // accepts the client's POST-back messages for the active SSE session.
+  const sseTransports = new Map<string, SSEServerTransport>();
+
+  app.get('/sse', async (req, res) => {
+    fileLog('SSE connection request', {
+      query: req.query,
+      userAgent: req.headers['user-agent'],
+    });
+
+    try {
+      const transport = new SSEServerTransport('/messages', res);
+      const sseServer = createMcpServer();
+
+      sseTransports.set(transport.sessionId, transport);
+      fileLog(`SSE session started: ${transport.sessionId}`);
+
+      res.on('close', async () => {
+        fileLog(`SSE client disconnected: ${transport.sessionId}`);
+        sseTransports.delete(transport.sessionId);
+        await transport.close();
+        await sseServer.close();
+      });
+
+      await sseServer.connect(transport);
+    } catch (error) {
+      log('Error handling GET /sse', { error: (error as Error).message });
+      if (!res.headersSent) {
+        res.status(500).end();
+      }
+    }
+  });
+
+  app.post('/messages', async (req, res) => {
+    const sessionId = req.query['sessionId'] as string | undefined;
+    if (!sessionId) {
+      res.status(400).json({ error: 'Missing sessionId query parameter' });
+      return;
+    }
+
+    const transport = sseTransports.get(sessionId);
+    if (!transport) {
+      fileLog(`SSE POST /messages: unknown session ${sessionId}`);
+      res.status(404).json({ error: 'SSE session not found' });
+      return;
+    }
+
+    try {
+      await transport.handlePostMessage(req, res, req.body);
+    } catch (error) {
+      log('Error handling POST /messages', { error: (error as Error).message });
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal server error' });
       }
     }
   });
