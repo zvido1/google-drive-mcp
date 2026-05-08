@@ -34,6 +34,20 @@ export async function createServiceAccountAuth(): Promise<any> {
 }
 
 // ---------------------------------------------------------------------------
+// Auth type detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a human-readable string describing the active authentication mode.
+ * Useful for diagnostics and error messages surfaced to the user.
+ */
+export function getAuthType(): 'service-account' | 'external-token' | 'oauth2' {
+  if (isServiceAccountMode()) return 'service-account';
+  if (isExternalTokenMode()) return 'external-token';
+  return 'oauth2';
+}
+
+// ---------------------------------------------------------------------------
 // External OAuth Token mode
 // ---------------------------------------------------------------------------
 

@@ -11,6 +11,7 @@ import { escapeDriveQuery, getMimeTypeFromFilename, TEXT_MIME_TYPES } from '../u
 import { downloadDriveFile, GOOGLE_WORKSPACE_EXPORT_FORMATS } from '../download-file.js';
 import { getSecureTokenPath } from '../auth/utils.js';
 import { SCOPE_ALIASES, SCOPE_PRESETS, resolveOAuthScopes } from '../auth/scopes.js';
+import { getAuthType, isServiceAccountMode } from '../auth/externalAuth.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -846,31 +847,59 @@ export async function handleTool(
       // Default to root if no folder specified
       const targetFolderId = data.folderId || 'root';
 
-      const res = await ctx.getDrive().files.list({
-        q: `'${targetFolderId}' in parents and trashed = false`,
-        pageSize: Math.min(data.pageSize || 50, 100),
-        pageToken: data.pageToken,
-        fields: "nextPageToken, files(id, name, mimeType, modifiedTime, size)",
-        orderBy: "name",
-        includeItemsFromAllDrives: true,
-        supportsAllDrives: true
-      });
+      // Log auth type for diagnostics
+      const authType = getAuthType();
+      ctx.log('listFolder called', { folderId: targetFolderId, authType });
 
-      const files = res.data.files || [];
-      const formattedFiles = files.map((file: drive_v3.Schema$File) => {
-        const isFolder = file.mimeType === FOLDER_MIME_TYPE;
-        return `${isFolder ? '📁' : '📄'} ${file.name} (ID: ${file.id})`;
-      }).join('\n');
+      try {
+        const res = await ctx.getDrive().files.list({
+          q: `'${targetFolderId}' in parents and trashed = false`,
+          pageSize: Math.min(data.pageSize || 50, 100),
+          pageToken: data.pageToken,
+          fields: "nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+          orderBy: "name",
+          includeItemsFromAllDrives: true,
+          supportsAllDrives: true
+        });
 
-      let response = `Contents of folder:\n\n${formattedFiles}`;
-      if (res.data.nextPageToken) {
-        response += `\n\nMore items available. Use pageToken: ${res.data.nextPageToken}`;
+        const files = res.data.files || [];
+        const formattedFiles = files.map((file: drive_v3.Schema$File) => {
+          const isFolder = file.mimeType === FOLDER_MIME_TYPE;
+          return `${isFolder ? '📁' : '📄'} ${file.name} (ID: ${file.id})`;
+        }).join('\n');
+
+        let response = `Contents of folder:\n\n${formattedFiles}`;
+        if (res.data.nextPageToken) {
+          response += `\n\nMore items available. Use pageToken: ${res.data.nextPageToken}`;
+        }
+
+        return {
+          content: [{ type: "text", text: response }],
+          isError: false
+        };
+      } catch (e: unknown) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        ctx.log('listFolder error', { folderId: targetFolderId, authType, error: err.message, stack: err.stack });
+
+        // Provide a targeted message when service account auth can't reach a personal Drive folder
+        if (isServiceAccountMode() && targetFolderId !== 'root') {
+          const saKeyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+          return errorResponse(
+            `Cannot access folder "${targetFolderId}" with service account authentication.\n\n` +
+            `Auth type in use: service-account (key file: ${saKeyFile})\n\n` +
+            `Service accounts have their own isolated Google Drive and cannot access a personal ` +
+            `Google Drive unless the folder has been explicitly shared with the service account email.\n\n` +
+            `To fix this, choose one of:\n` +
+            `  1. Share the folder with the service account email address (found in the key file as "client_email").\n` +
+            `  2. Switch to OAuth2 user authentication by setting GOOGLE_DRIVE_MCP_ACCESS_TOKEN ` +
+            `(and optionally GOOGLE_DRIVE_MCP_REFRESH_TOKEN + GOOGLE_DRIVE_MCP_CLIENT_ID + GOOGLE_DRIVE_MCP_CLIENT_SECRET) ` +
+            `instead of GOOGLE_APPLICATION_CREDENTIALS.\n\n` +
+            `Original error: ${err.message}`
+          );
+        }
+
+        throw err;
       }
-
-      return {
-        content: [{ type: "text", text: response }],
-        isError: false
-      };
     }
 
     case "listSharedDrives": {
